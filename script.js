@@ -29,6 +29,19 @@ function loadData() {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (raw) {
             visitData = JSON.parse(raw);
+            // 清理早期版本的无效数据（ISO_A3 为 "-99" 的脏数据）
+            const invalidKeys = ['-99', '-1', 'undefined', 'null', ''];
+            let cleaned = false;
+            for (const key of invalidKeys) {
+                if (key in visitData) {
+                    delete visitData[key];
+                    cleaned = true;
+                }
+            }
+            if (cleaned) {
+                saveData();
+                console.log('已清理无效数据条目');
+            }
         }
     } catch (e) {
         console.error('加载数据失败：', e);
@@ -116,8 +129,33 @@ function getCountryStyle(feature) {
 
 function getFeatureCode(feature) {
     const props = feature.properties || {};
-    return props.ISO_A3 || props.iso_a3 || props.ADM0_A3 || props.adm0_a3 || 
-           props.SOV_A3 || props.sov_a3 || props.id || null;
+    // 按优先级尝试各个 ISO 代码字段
+    // 注意：Natural Earth 数据中很多国家的 ISO_A3 是 "-99"（如法国、挪威、科索沃等），
+    // 这是由于政治原因或数据缺失。所以优先使用 ADM0_A3（行政区代码），它对所有国家都有效。
+    const isoFields = [
+        'ADM0_A3', 'adm0_a3',
+        'ISO_A3_EH', 'iso_a3_eh',
+        'ISO_A3', 'iso_a3',
+        'WB_A3', 'wb_a3',
+        'BRK_A3', 'brk_a3',
+        'GU_A3', 'gu_a3',
+        'SOV_A3', 'sov_a3'
+    ];
+    for (const field of isoFields) {
+        const c = props[field];
+        if (c && typeof c === 'string') {
+            const v = c.trim();
+            if (v && v !== '-99' && v !== '-1' && v !== 'undefined' && v.length === 3) {
+                return v.toUpperCase();
+            }
+        }
+    }
+    // 最后用国家名作为唯一标识，避免不同国家共享同一个无效代码
+    const name = getFeatureName(feature);
+    if (name) {
+        return '__' + name.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]/g, '_');
+    }
+    return null;
 }
 
 function getFeatureName(feature) {
@@ -125,6 +163,7 @@ function getFeatureName(feature) {
     return props.NAME_ZH || props.name_zh ||
            props.NAME || props.name || 
            props.ADMIN || props.admin || 
+           props.NAME_LONG || props.name_long ||
            props.NAME_EN || props.name_en || '';
 }
 
