@@ -25,11 +25,12 @@ let currentPhotos = [];
 let viewerPhotos = [];
 let viewerIndex = 0;
 
-// GeoJSON 数据源
+// GeoJSON 数据源（优先本地，避免国内访问 CDN 慢的问题）
 const GEOJSON_SOURCES = [
+    'data/countries-110m.geojson',
     'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_110m_admin_0_countries.geojson',
-    'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson',
-    'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_0_countries.geojson'
+    'https://fastly.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_110m_admin_0_countries.geojson',
+    'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson'
 ];
 
 // ==================== 数据持久化 ====================
