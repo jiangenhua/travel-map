@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>我的世界旅行地图</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌍</text></svg>">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -36,7 +35,24 @@
         <main class="main">
             <!-- 地图区域 -->
             <div class="map-container">
-                <div id="map"></div>
+                <div id="globe"></div>
+                <div class="globe-tooltip" id="globeTooltip"></div>
+
+                <div class="map-controls">
+                    <button class="map-control-btn" id="autoRotateBtn" title="自动旋转">
+                        <span class="icon">⟳</span>
+                    </button>
+                    <button class="map-control-btn" id="zoomInBtn" title="放大">
+                        <span class="icon">+</span>
+                    </button>
+                    <button class="map-control-btn" id="zoomOutBtn" title="缩小">
+                        <span class="icon">−</span>
+                    </button>
+                    <button class="map-control-btn" id="resetViewBtn" title="重置视角">
+                        <span class="icon">⌂</span>
+                    </button>
+                </div>
+
                 <div class="map-loading" id="mapLoading">
                     <div class="spinner"></div>
                     <p>加载世界地图中...</p>
@@ -50,6 +66,7 @@
                         <span class="legend-color unvisited"></span>
                         <span>未去过</span>
                     </div>
+                    <div class="legend-hint">拖拽旋转 · 滚轮缩放</div>
                 </div>
             </div>
 
@@ -186,7 +203,7 @@
     <!-- Toast 通知 -->
     <div class="toast" id="toast"></div>
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
     <script src="countries.js"></script>
     <script src="script.js"></script>
 </body>

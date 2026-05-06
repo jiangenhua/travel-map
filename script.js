@@ -1,14 +1,23 @@
 /**
- * 世界旅行地图 - 主要逻辑
+ * 世界旅行地图 - 基于 D3.js 的 3D 地球仪
  */
 
 // ==================== 全局状态 ====================
 const STORAGE_KEY = 'travel-map-data';
 const TOTAL_COUNTRIES = Object.keys(COUNTRIES_DATA).length;
 
-let map = null;
-let countriesLayer = null;
-let visitData = {}; // { ISO_A3: { date, cities, rating, notes, photos } }
+// 地图相关
+let svg, gCountries, gGraticule, sphereCircle;
+let projection, pathGenerator;
+let countryFeatures = [];
+let width = 0, height = 0;
+let currentScale = 280;
+let rotation = [0, -20];
+let autoRotateTimer = null;
+let isAutoRotating = false;
+
+// 弹窗相关
+let visitData = {};
 let currentCountryCode = null;
 let currentCountryInfo = null;
 let currentRating = 0;
@@ -16,11 +25,11 @@ let currentPhotos = [];
 let viewerPhotos = [];
 let viewerIndex = 0;
 
-// GeoJSON 数据源（多个备用源，按顺序尝试）
+// GeoJSON 数据源
 const GEOJSON_SOURCES = [
-    'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_0_countries.geojson',
-    'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson',
-    'https://datahub.io/core/geo-countries/r/0.geojson'
+    'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_110m_admin_0_countries.geojson',
+    'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson',
+    'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_0_countries.geojson'
 ];
 
 // ==================== 数据持久化 ====================
@@ -29,7 +38,7 @@ function loadData() {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (raw) {
             visitData = JSON.parse(raw);
-            // 清理早期版本的无效数据（ISO_A3 为 "-99" 的脏数据）
+            // 清理早期版本的无效数据
             const invalidKeys = ['-99', '-1', 'undefined', 'null', ''];
             let cleaned = false;
             for (const key of invalidKeys) {
@@ -52,86 +61,21 @@ function loadData() {
 function saveData() {
     try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(visitData));
+        return true;
     } catch (e) {
         console.error('保存数据失败：', e);
         if (e.name === 'QuotaExceededError') {
-            showToast('存储空间不足，照片可能过大', 'error');
+            showToast('存储空间不足，请删除部分照片或清空数据', 'error');
+        } else {
+            showToast('保存失败：' + e.message, 'error');
         }
+        return false;
     }
 }
 
-// ==================== 地图初始化 ====================
-function initMap() {
-    map = L.map('map', {
-        center: [20, 10],
-        zoom: 2,
-        minZoom: 2,
-        maxZoom: 8,
-        worldCopyJump: true,
-        zoomControl: true,
-        attributionControl: false
-    });
-
-    // 使用 CartoDB 简洁底图
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
-        subdomains: 'abcd',
-        maxZoom: 19
-    }).addTo(map);
-
-    // 加载国家边界数据
-    loadCountriesGeoJSON();
-}
-
-async function loadCountriesGeoJSON() {
-    let geojson = null;
-
-    for (const url of GEOJSON_SOURCES) {
-        try {
-            const response = await fetch(url);
-            if (response.ok) {
-                geojson = await response.json();
-                break;
-            }
-        } catch (e) {
-            console.warn(`加载失败 ${url}:`, e);
-        }
-    }
-
-    if (!geojson) {
-        document.getElementById('mapLoading').innerHTML = `
-            <p style="color: #ef4444;">⚠️ 地图数据加载失败</p>
-            <p style="font-size: 12px; color: #6b7280;">请检查网络连接后刷新页面</p>
-        `;
-        return;
-    }
-
-    countriesLayer = L.geoJSON(geojson, {
-        style: getCountryStyle,
-        onEachFeature: bindCountryEvents
-    }).addTo(map);
-
-    document.getElementById('mapLoading').classList.add('hidden');
-    refreshUI();
-}
-
-function getCountryStyle(feature) {
-    const code = getFeatureCode(feature);
-    const isVisited = !!visitData[code];
-
-    return {
-        fillColor: isVisited ? '#4f7df3' : '#e5e7eb',
-        fillOpacity: isVisited ? 0.75 : 0.6,
-        weight: 0.6,
-        color: '#9ca3af',
-        opacity: 0.8
-    };
-}
-
+// ==================== 国家代码识别 ====================
 function getFeatureCode(feature) {
     const props = feature.properties || {};
-    // 按优先级尝试各个 ISO 代码字段
-    // 注意：Natural Earth 数据中很多国家的 ISO_A3 是 "-99"（如法国、挪威、科索沃等），
-    // 这是由于政治原因或数据缺失。所以优先使用 ADM0_A3（行政区代码），它对所有国家都有效。
     const isoFields = [
         'ADM0_A3', 'adm0_a3',
         'ISO_A3_EH', 'iso_a3_eh',
@@ -150,7 +94,6 @@ function getFeatureCode(feature) {
             }
         }
     }
-    // 最后用国家名作为唯一标识，避免不同国家共享同一个无效代码
     const name = getFeatureName(feature);
     if (name) {
         return '__' + name.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]/g, '_');
@@ -167,38 +110,298 @@ function getFeatureName(feature) {
            props.NAME_EN || props.name_en || '';
 }
 
-function bindCountryEvents(feature, layer) {
-    const code = getFeatureCode(feature);
-    const name = getFeatureName(feature);
-    const info = getCountryInfo(code, name);
+// ==================== 球体地图初始化 ====================
+function initGlobe() {
+    const container = document.getElementById('globe');
+    width = container.clientWidth;
+    height = container.clientHeight;
 
-    // 鼠标悬停
-    layer.on('mouseover', function(e) {
-        const layer = e.target;
-        layer.setStyle({
-            weight: 2,
-            color: '#4f7df3',
-            fillOpacity: visitData[info.code] ? 0.9 : 0.8
+    // 计算合适的初始缩放
+    currentScale = Math.min(width, height) * 0.42;
+
+    projection = d3.geoOrthographic()
+        .scale(currentScale)
+        .translate([width / 2, height / 2])
+        .clipAngle(90)
+        .rotate(rotation);
+
+    pathGenerator = d3.geoPath(projection);
+
+    svg = d3.select('#globe').append('svg')
+        .attr('viewBox', `0 0 ${width} ${height}`)
+        .attr('preserveAspectRatio', 'xMidYMid meet');
+
+    // 渐变定义
+    const defs = svg.append('defs');
+
+    // 球体海洋渐变
+    const oceanGradient = defs.append('radialGradient')
+        .attr('id', 'ocean-gradient')
+        .attr('cx', '40%')
+        .attr('cy', '35%');
+    oceanGradient.append('stop')
+        .attr('offset', '0%')
+        .attr('stop-color', '#7ab8e8');
+    oceanGradient.append('stop')
+        .attr('offset', '60%')
+        .attr('stop-color', '#4a90c8');
+    oceanGradient.append('stop')
+        .attr('offset', '100%')
+        .attr('stop-color', '#1f4d7a');
+
+    // 球体光晕
+    const glow = defs.append('radialGradient')
+        .attr('id', 'glow-gradient');
+    glow.append('stop').attr('offset', '0%').attr('stop-color', 'rgba(100,180,255,0)');
+    glow.append('stop').attr('offset', '85%').attr('stop-color', 'rgba(100,180,255,0)');
+    glow.append('stop').attr('offset', '100%').attr('stop-color', 'rgba(100,180,255,0.4)');
+
+    // 外层光晕
+    svg.append('circle')
+        .attr('class', 'globe-glow')
+        .attr('cx', width / 2)
+        .attr('cy', height / 2)
+        .attr('r', currentScale * 1.08)
+        .attr('fill', 'url(#glow-gradient)');
+
+    // 海洋背景圆（球体）
+    sphereCircle = svg.append('circle')
+        .attr('class', 'sphere')
+        .attr('cx', width / 2)
+        .attr('cy', height / 2)
+        .attr('r', currentScale)
+        .attr('fill', 'url(#ocean-gradient)');
+
+    // 经纬线层
+    gGraticule = svg.append('g').attr('class', 'graticule-layer');
+    gGraticule.append('path')
+        .datum(d3.geoGraticule10())
+        .attr('class', 'graticule')
+        .attr('d', pathGenerator);
+
+    // 国家层
+    gCountries = svg.append('g').attr('class', 'countries-layer');
+
+    // 加载国家数据
+    loadCountries();
+
+    // 设置交互
+    setupInteractions();
+
+    // 窗口大小变化时重绘
+    window.addEventListener('resize', handleResize);
+}
+
+async function loadCountries() {
+    let geojson = null;
+
+    for (const url of GEOJSON_SOURCES) {
+        try {
+            const response = await fetch(url);
+            if (response.ok) {
+                geojson = await response.json();
+                break;
+            }
+        } catch (e) {
+            console.warn(`加载失败 ${url}:`, e);
+        }
+    }
+
+    if (!geojson) {
+        document.getElementById('mapLoading').innerHTML = `
+            <p style="color: #ef4444;">⚠️ 地图数据加载失败</p>
+            <p style="font-size: 12px;">请检查网络连接后刷新页面</p>
+        `;
+        return;
+    }
+
+    countryFeatures = geojson.features;
+
+    gCountries.selectAll('path')
+        .data(countryFeatures)
+        .enter().append('path')
+        .attr('class', d => {
+            const code = getFeatureCode(d);
+            return 'country ' + (visitData[code] ? 'visited' : 'unvisited');
+        })
+        .attr('d', pathGenerator)
+        .attr('stroke', 'rgba(255,255,255,0.5)')
+        .attr('stroke-width', 0.5)
+        .on('mouseover', handleCountryMouseOver)
+        .on('mousemove', handleCountryMouseMove)
+        .on('mouseout', handleCountryMouseOut)
+        .on('click', handleCountryClick);
+
+    document.getElementById('mapLoading').classList.add('hidden');
+    refreshUI();
+}
+
+function updateGlobe() {
+    if (!projection) return;
+    sphereCircle.attr('r', projection.scale());
+    svg.select('.globe-glow').attr('r', projection.scale() * 1.08);
+    gGraticule.select('path').attr('d', pathGenerator);
+    gCountries.selectAll('path').attr('d', pathGenerator);
+}
+
+function handleResize() {
+    const container = document.getElementById('globe');
+    const newWidth = container.clientWidth;
+    const newHeight = container.clientHeight;
+    if (newWidth === width && newHeight === height) return;
+
+    width = newWidth;
+    height = newHeight;
+    const newScale = Math.min(width, height) * 0.42;
+
+    projection.translate([width / 2, height / 2]).scale(newScale);
+    svg.attr('viewBox', `0 0 ${width} ${height}`);
+    sphereCircle.attr('cx', width / 2).attr('cy', height / 2);
+    svg.select('.globe-glow').attr('cx', width / 2).attr('cy', height / 2);
+    updateGlobe();
+}
+
+// ==================== 交互（拖拽/缩放/点击） ====================
+function setupInteractions() {
+    // 拖拽旋转
+    const drag = d3.drag()
+        .on('start', () => {
+            stopAutoRotate();
+        })
+        .on('drag', (event) => {
+            const sensitivity = 0.4;
+            const r = projection.rotate();
+            const k = sensitivity * (300 / projection.scale());
+            const newLambda = r[0] + event.dx * k;
+            const newPhi = r[1] - event.dy * k;
+            rotation = [newLambda, Math.max(-90, Math.min(90, newPhi))];
+            projection.rotate(rotation);
+            updateGlobe();
         });
-        layer.bringToFront();
-    });
 
-    layer.on('mouseout', function(e) {
-        countriesLayer.resetStyle(e.target);
-    });
+    svg.call(drag);
 
-    // 悬浮提示
-    const tooltipText = `${info.flag} ${info.zh}${visitData[info.code] ? ' ✓' : ''}`;
-    layer.bindTooltip(tooltipText, {
-        sticky: true,
-        className: 'country-tooltip',
-        direction: 'top'
-    });
+    // 滚轮缩放
+    svg.on('wheel', (event) => {
+        event.preventDefault();
+        const delta = event.deltaY < 0 ? 1.15 : 0.87;
+        zoom(delta);
+    }, { passive: false });
 
-    // 点击事件
-    layer.on('click', function() {
-        openCountryModal(info);
-    });
+    // 防止双击选中
+    svg.on('dblclick', (event) => event.preventDefault());
+}
+
+function zoom(factor) {
+    const newScale = projection.scale() * factor;
+    const minScale = Math.min(width, height) * 0.2;
+    const maxScale = Math.min(width, height) * 3;
+    const clamped = Math.max(minScale, Math.min(maxScale, newScale));
+    projection.scale(clamped);
+    updateGlobe();
+}
+
+function resetView() {
+    stopAutoRotate();
+    rotation = [0, -20];
+    const initialScale = Math.min(width, height) * 0.42;
+    projection.scale(initialScale).rotate(rotation);
+    updateGlobe();
+}
+
+function startAutoRotate() {
+    if (isAutoRotating) return;
+    isAutoRotating = true;
+    document.getElementById('autoRotateBtn').classList.add('active');
+
+    let lastTime = Date.now();
+    const tick = () => {
+        const now = Date.now();
+        const dt = now - lastTime;
+        lastTime = now;
+        if (!isAutoRotating) return;
+        const r = projection.rotate();
+        rotation = [r[0] + dt * 0.015, r[1]];
+        projection.rotate(rotation);
+        updateGlobe();
+        autoRotateTimer = requestAnimationFrame(tick);
+    };
+    autoRotateTimer = requestAnimationFrame(tick);
+}
+
+function stopAutoRotate() {
+    if (!isAutoRotating) return;
+    isAutoRotating = false;
+    document.getElementById('autoRotateBtn').classList.remove('active');
+    if (autoRotateTimer) {
+        cancelAnimationFrame(autoRotateTimer);
+        autoRotateTimer = null;
+    }
+}
+
+function toggleAutoRotate() {
+    if (isAutoRotating) stopAutoRotate();
+    else startAutoRotate();
+}
+
+// ==================== 国家事件 ====================
+function handleCountryMouseOver(event, d) {
+    d3.select(this).classed('hover', true);
+    const code = getFeatureCode(d);
+    const name = getFeatureName(d);
+    const info = getCountryInfo(code, name);
+    const tooltip = document.getElementById('globeTooltip');
+    const visited = visitData[info.code];
+    tooltip.innerHTML = `${info.flag} <strong>${info.zh}</strong>${visited ? ' ✓' : ''}`;
+    tooltip.classList.add('visible');
+    handleCountryMouseMove(event);
+}
+
+function handleCountryMouseMove(event) {
+    const tooltip = document.getElementById('globeTooltip');
+    const container = document.getElementById('globe').getBoundingClientRect();
+    tooltip.style.left = (event.clientX - container.left) + 'px';
+    tooltip.style.top = (event.clientY - container.top) + 'px';
+}
+
+function handleCountryMouseOut(event, d) {
+    d3.select(this).classed('hover', false);
+    document.getElementById('globeTooltip').classList.remove('visible');
+}
+
+function handleCountryClick(event, d) {
+    event.stopPropagation();
+    const code = getFeatureCode(d);
+    const name = getFeatureName(d);
+    const info = getCountryInfo(code, name);
+    if (!info.code) return;
+
+    // 旋转地球到该国家中心
+    const centroid = d3.geoCentroid(d);
+    if (centroid && !isNaN(centroid[0]) && !isNaN(centroid[1])) {
+        animateRotation([-centroid[0], -centroid[1]]);
+    }
+
+    openCountryModal(info);
+}
+
+function animateRotation(targetRotation) {
+    stopAutoRotate();
+    const startRotation = projection.rotate();
+    const duration = 600;
+    const startTime = Date.now();
+
+    const interpolate = d3.interpolate(startRotation, [targetRotation[0], targetRotation[1], 0]);
+    const tick = () => {
+        const elapsed = Date.now() - startTime;
+        const t = Math.min(1, elapsed / duration);
+        const eased = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+        rotation = interpolate(eased);
+        projection.rotate(rotation);
+        updateGlobe();
+        if (t < 1) requestAnimationFrame(tick);
+    };
+    tick();
 }
 
 // ==================== 国家弹窗 ====================
@@ -255,6 +458,32 @@ function updateRatingUI() {
     });
 }
 
+/**
+ * 把当前编辑的内容立即保存到 visitData（用于自动保存场景，例如照片上传）
+ * 即使用户没点保存按钮，也确保数据落地
+ */
+function commitCurrentEdit({ markVisited = false } = {}) {
+    if (!currentCountryCode || !currentCountryInfo) return false;
+
+    const isVisited = markVisited || document.getElementById('visitedToggle').checked;
+    if (!isVisited) return false;
+
+    visitData[currentCountryCode] = {
+        code: currentCountryCode,
+        zh: currentCountryInfo.zh,
+        en: currentCountryInfo.en,
+        flag: currentCountryInfo.flag,
+        continent: currentCountryInfo.continent,
+        date: document.getElementById('visitDate').value,
+        cities: document.getElementById('visitCities').value.trim(),
+        rating: currentRating,
+        notes: document.getElementById('visitNotes').value.trim(),
+        photos: currentPhotos,
+        updatedAt: new Date().toISOString()
+    };
+    return saveData();
+}
+
 function saveCountry() {
     if (!currentCountryCode) return;
 
@@ -262,25 +491,15 @@ function saveCountry() {
 
     if (!isVisited) {
         delete visitData[currentCountryCode];
+        saveData();
         showToast('已取消标记', 'success');
     } else {
-        visitData[currentCountryCode] = {
-            code: currentCountryCode,
-            zh: currentCountryInfo.zh,
-            en: currentCountryInfo.en,
-            flag: currentCountryInfo.flag,
-            continent: currentCountryInfo.continent,
-            date: document.getElementById('visitDate').value,
-            cities: document.getElementById('visitCities').value.trim(),
-            rating: currentRating,
-            notes: document.getElementById('visitNotes').value.trim(),
-            photos: currentPhotos,
-            updatedAt: new Date().toISOString()
-        };
-        showToast(`已保存 ${currentCountryInfo.zh} 的旅行记录`, 'success');
+        const ok = commitCurrentEdit();
+        if (ok) {
+            showToast(`已保存 ${currentCountryInfo.zh} 的旅行记录`, 'success');
+        }
     }
 
-    saveData();
     refreshUI();
     closeModal();
 }
@@ -317,37 +536,47 @@ async function handlePhotoUpload(event) {
     event.target.value = '';
 
     if (added > 0) {
-        showToast(`已添加 ${added} 张照片${skipped > 0 ? `，${skipped} 张失败` : ''}`, 'success');
+        // 自动启用「已去过」开关，并立即写入 localStorage
+        // 这样即使用户上传完直接关闭弹窗，照片也已经持久化
+        const toggle = document.getElementById('visitedToggle');
+        if (!toggle.checked) {
+            toggle.checked = true;
+            updateDetailsState();
+        }
+        const ok = commitCurrentEdit({ markVisited: true });
+        if (ok) {
+            refreshUI();
+            showToast(`已添加 ${added} 张照片并自动保存${skipped > 0 ? `（${skipped} 张失败）` : ''}`, 'success');
+        }
+    } else if (skipped > 0) {
+        showToast(`${skipped} 张图片处理失败`, 'error');
     }
 }
 
-/**
- * 压缩图片，限制最大边长，输出为 base64
- */
 function compressImage(file, maxSize = 1280, quality = 0.8) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (e) => {
             const img = new Image();
             img.onload = () => {
-                let width = img.width;
-                let height = img.height;
+                let w = img.width;
+                let h = img.height;
 
-                if (width > maxSize || height > maxSize) {
-                    if (width > height) {
-                        height = Math.round((height * maxSize) / width);
-                        width = maxSize;
+                if (w > maxSize || h > maxSize) {
+                    if (w > h) {
+                        h = Math.round((h * maxSize) / w);
+                        w = maxSize;
                     } else {
-                        width = Math.round((width * maxSize) / height);
-                        height = maxSize;
+                        w = Math.round((w * maxSize) / h);
+                        h = maxSize;
                     }
                 }
 
                 const canvas = document.createElement('canvas');
-                canvas.width = width;
-                canvas.height = height;
+                canvas.width = w;
+                canvas.height = h;
                 const ctx = canvas.getContext('2d');
-                ctx.drawImage(img, 0, 0, width, height);
+                ctx.drawImage(img, 0, 0, w, h);
                 resolve(canvas.toDataURL('image/jpeg', quality));
             };
             img.onerror = reject;
@@ -378,6 +607,11 @@ function updatePhotoGrid() {
                 const idx = parseInt(e.target.dataset.index);
                 currentPhotos.splice(idx, 1);
                 updatePhotoGrid();
+                // 删除照片也立即同步到本地
+                if (document.getElementById('visitedToggle').checked) {
+                    commitCurrentEdit();
+                    refreshUI();
+                }
             } else {
                 const idx = parseInt(el.dataset.index);
                 openPhotoViewer(currentPhotos, idx);
@@ -424,12 +658,16 @@ function refreshUI() {
     updateStats();
     updateProgressBar();
     updateVisitedList();
+    updateCountryColors();
+}
 
-    if (countriesLayer) {
-        countriesLayer.eachLayer(layer => {
-            countriesLayer.resetStyle(layer);
+function updateCountryColors() {
+    if (!gCountries) return;
+    gCountries.selectAll('path')
+        .attr('class', d => {
+            const code = getFeatureCode(d);
+            return 'country ' + (visitData[code] ? 'visited' : 'unvisited');
         });
-    }
 }
 
 function updateStats() {
@@ -482,7 +720,7 @@ function updateVisitedList(filter = '') {
                 <div class="empty-state">
                     <div class="empty-icon">🗺️</div>
                     <p>还没有旅行记录</p>
-                    <p class="empty-hint">点击地图上的国家开始记录吧！</p>
+                    <p class="empty-hint">点击地球上的国家开始记录吧！</p>
                 </div>
             `;
         }
@@ -523,6 +761,14 @@ function updateVisitedList(filter = '') {
             const code = el.dataset.code;
             const data = visitData[code];
             if (data) {
+                // 旋转地球到该国家
+                const feature = countryFeatures.find(f => getFeatureCode(f) === code);
+                if (feature) {
+                    const centroid = d3.geoCentroid(feature);
+                    if (centroid && !isNaN(centroid[0])) {
+                        animateRotation([-centroid[0], -centroid[1]]);
+                    }
+                }
                 openCountryModal({
                     code: data.code,
                     zh: data.zh,
@@ -633,6 +879,7 @@ function showToast(message, type = '') {
 
 // ==================== 事件绑定 ====================
 function bindEvents() {
+    // 弹窗关闭
     document.getElementById('modalClose').addEventListener('click', closeModal);
     document.getElementById('cancelBtn').addEventListener('click', closeModal);
     document.querySelector('#countryModal .modal-overlay').addEventListener('click', closeModal);
@@ -640,6 +887,7 @@ function bindEvents() {
 
     document.getElementById('visitedToggle').addEventListener('change', updateDetailsState);
 
+    // 评分
     document.querySelectorAll('#ratingStars .star').forEach(star => {
         star.addEventListener('click', () => {
             const value = parseInt(star.dataset.value);
@@ -648,16 +896,19 @@ function bindEvents() {
         });
     });
 
+    // 照片上传
     document.getElementById('uploadBtn').addEventListener('click', () => {
         document.getElementById('photoInput').click();
     });
     document.getElementById('photoInput').addEventListener('change', handlePhotoUpload);
 
+    // 照片预览
     document.getElementById('photoViewerClose').addEventListener('click', closePhotoViewer);
     document.querySelector('.photo-viewer-overlay').addEventListener('click', closePhotoViewer);
     document.getElementById('photoViewerPrev').addEventListener('click', showPrevPhoto);
     document.getElementById('photoViewerNext').addEventListener('click', showNextPhoto);
 
+    // 键盘
     document.addEventListener('keydown', (e) => {
         if (document.getElementById('photoViewer').classList.contains('active')) {
             if (e.key === 'Escape') closePhotoViewer();
@@ -668,6 +919,7 @@ function bindEvents() {
         }
     });
 
+    // 数据管理
     document.getElementById('exportBtn').addEventListener('click', exportData);
     document.getElementById('importBtn').addEventListener('click', () => {
         document.getElementById('importInput').click();
@@ -675,6 +927,7 @@ function bindEvents() {
     document.getElementById('importInput').addEventListener('change', importData);
     document.getElementById('resetBtn').addEventListener('click', resetData);
 
+    // 搜索
     let searchTimer = null;
     document.getElementById('searchInput').addEventListener('input', (e) => {
         if (searchTimer) clearTimeout(searchTimer);
@@ -682,11 +935,17 @@ function bindEvents() {
             updateVisitedList(e.target.value);
         }, 200);
     });
+
+    // 地图控制按钮
+    document.getElementById('autoRotateBtn').addEventListener('click', toggleAutoRotate);
+    document.getElementById('zoomInBtn').addEventListener('click', () => zoom(1.3));
+    document.getElementById('zoomOutBtn').addEventListener('click', () => zoom(0.77));
+    document.getElementById('resetViewBtn').addEventListener('click', resetView);
 }
 
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', () => {
     loadData();
     bindEvents();
-    initMap();
+    initGlobe();
 });
