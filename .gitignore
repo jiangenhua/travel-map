@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 临时文件
+*.log
+*.tmp
+*.bak
+
+# 用户数据备份（不提交到仓库）
+*.backup.json
+my-travel-data.json
+
+# Node 相关（如果有）
+node_modules/
+package-lock.json
+
+# 系统
+Thumbs.db
+ehthumbs.db
+Desktop.ini

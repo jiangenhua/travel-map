@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的世界旅行地图</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌍</text></svg>">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- 顶部导航 -->
+        <header class="header">
+            <div class="header-left">
+                <h1 class="title">
+                    <span class="title-icon">🌍</span>
+                    我的世界旅行地图
+                </h1>
+            </div>
+            <div class="header-right">
+                <button id="importBtn" class="btn btn-ghost" title="导入数据">
+                    <span>📥</span> 导入
+                </button>
+                <button id="exportBtn" class="btn btn-ghost" title="导出数据">
+                    <span>📤</span> 导出
+                </button>
+                <button id="resetBtn" class="btn btn-ghost btn-danger" title="清空所有数据">
+                    <span>🗑️</span> 清空
+                </button>
+                <input type="file" id="importInput" accept="application/json" style="display:none">
+            </div>
+        </header>
+
+        <!-- 主内容区 -->
+        <main class="main">
+            <!-- 地图区域 -->
+            <div class="map-container">
+                <div id="map"></div>
+                <div class="map-loading" id="mapLoading">
+                    <div class="spinner"></div>
+                    <p>加载世界地图中...</p>
+                </div>
+                <div class="map-legend">
+                    <div class="legend-item">
+                        <span class="legend-color visited"></span>
+                        <span>已去过</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color unvisited"></span>
+                        <span>未去过</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 侧边栏 -->
+            <aside class="sidebar">
+                <!-- 统计卡片 -->
+                <div class="stats">
+                    <div class="stat-card">
+                        <div class="stat-number" id="countryCount">0</div>
+                        <div class="stat-label">已去过国家</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="photoCount">0</div>
+                        <div class="stat-label">照片</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="continentCount">0</div>
+                        <div class="stat-label">大洲</div>
+                    </div>
+                </div>
+
+                <!-- 进度条 -->
+                <div class="progress-section">
+                    <div class="progress-label">
+                        <span>世界探索进度</span>
+                        <span id="progressText">0%</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                </div>
+
+                <!-- 搜索框 -->
+                <div class="search-box">
+                    <input type="text" id="searchInput" placeholder="🔍 搜索国家或地区...">
+                </div>
+
+                <!-- 已去过的国家列表 -->
+                <div class="visited-section">
+                    <h3 class="section-title">
+                        ✈️ 旅行记录
+                    </h3>
+                    <div class="visited-list" id="visitedList">
+                        <div class="empty-state">
+                            <div class="empty-icon">🗺️</div>
+                            <p>还没有旅行记录</p>
+                            <p class="empty-hint">点击地图上的国家开始记录吧！</p>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <!-- 国家详情弹窗 -->
+    <div class="modal" id="countryModal">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title-row">
+                    <h2 id="modalCountryName">国家名称</h2>
+                    <span class="modal-flag" id="modalCountryFlag"></span>
+                </div>
+                <button class="modal-close" id="modalClose">×</button>
+            </div>
+            <div class="modal-body">
+                <!-- 标记按钮 -->
+                <div class="visit-toggle">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="visitedToggle">
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-text">已去过这里</span>
+                    </label>
+                </div>
+
+                <!-- 详情表单 -->
+                <div class="visit-details" id="visitDetails">
+                    <div class="form-group">
+                        <label>访问日期</label>
+                        <input type="date" id="visitDate">
+                    </div>
+
+                    <div class="form-group">
+                        <label>城市/地区</label>
+                        <input type="text" id="visitCities" placeholder="例如：东京、京都、大阪">
+                    </div>
+
+                    <div class="form-group">
+                        <label>评分</label>
+                        <div class="rating" id="ratingStars">
+                            <span class="star" data-value="1">★</span>
+                            <span class="star" data-value="2">★</span>
+                            <span class="star" data-value="3">★</span>
+                            <span class="star" data-value="4">★</span>
+                            <span class="star" data-value="5">★</span>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>旅行笔记</label>
+                        <textarea id="visitNotes" rows="4" placeholder="记录你的旅行感受、难忘的瞬间..."></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label>照片</label>
+                        <div class="photo-upload">
+                            <input type="file" id="photoInput" accept="image/*" multiple style="display:none">
+                            <button class="btn-upload" id="uploadBtn">
+                                <span>📷</span> 上传照片
+                            </button>
+                            <span class="photo-hint">支持多张图片，建议每张小于2MB</span>
+                        </div>
+                        <div class="photo-grid" id="photoGrid"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="cancelBtn">取消</button>
+                <button class="btn btn-primary" id="saveBtn">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 照片预览弹窗 -->
+    <div class="photo-viewer" id="photoViewer">
+        <div class="photo-viewer-overlay"></div>
+        <button class="photo-viewer-close" id="photoViewerClose">×</button>
+        <button class="photo-viewer-prev" id="photoViewerPrev">‹</button>
+        <button class="photo-viewer-next" id="photoViewerNext">›</button>
+        <img id="photoViewerImg" src="" alt="">
+        <div class="photo-viewer-info" id="photoViewerInfo"></div>
+    </div>
+
+    <!-- Toast 通知 -->
+    <div class="toast" id="toast"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="countries.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
